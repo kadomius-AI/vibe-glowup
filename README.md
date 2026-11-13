@@ -34,6 +34,7 @@ Experimental: light skin touch-up. Real face/beard changes need a generative AI 
 | Product cut-outs | Segment Anything (SAM ViT-B) | Apache-2.0 |
 | Person cut-outs / backgrounds | MediaPipe selfie segmenter | Apache-2.0 |
 | Face edits (beard / stubble / shave, consent only) | SDXL Inpainting via diffusers + MediaPipe Face Landmarker | CreativeML Open RAIL++-M / Apache-2.0 |
+| AI upscaling of old low-res footage | Real-ESRGAN x4 via spandrel | BSD-3 / MIT |
 | Graphics and text | Pillow + NumPy | MIT-CMU / BSD |
 | AI runtime | PyTorch (Apple GPU), MLX | BSD / MIT |
 No API keys, no accounts, no payments. First use downloads about 10–15 GB of models once.

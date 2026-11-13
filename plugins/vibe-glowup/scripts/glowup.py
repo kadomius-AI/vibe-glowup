@@ -17,6 +17,7 @@
                    [--face-edit beard|stubble|shave|custom] [--face-prompt "..."]
                                             EXPERIMENTAL generative face edit carried across the video (consent only)
                    [--music-prompt "..."]  add an original, royalty-free music bed (ducked under the voice)
+                   [--upscale auto|on|off]  AI upscaling (Real-ESRGAN) for old low-resolution footage
       Steps run in that order; the original file is never changed.
 """
 import argparse, json, subprocess, sys
@@ -107,7 +108,7 @@ def analyze(old, ref, out):
 
 
 # ---------- look filters ----------
-def color_filter(old_frames, ref_frames, strength):
+def color_filter(old_frames, ref_frames, strength, chroma=0.3):
     so, sr = look_stats(old_frames), look_stats(ref_frames)
     mo, do = np.array(so["lab_mean"]), np.array(so["lab_std"]) + 1e-3
     mr, dr = np.array(sr["lab_mean"]), np.array(sr["lab_std"])
@@ -116,7 +117,8 @@ def color_filter(old_frames, ref_frames, strength):
     for c in range(3):  # per-channel lookup tables = fast per-frame transfer
         x = np.arange(256, dtype=np.float32)
         y = (x - mo[c]) * gain[c] + mr[c]
-        lut.append(np.clip(x + strength * (y - x), 0, 255).astype(np.uint8))
+        k = strength if c == 0 else strength * chroma      # brightness/contrast fully, color shift gently
+        lut.append(np.clip(x + k * (y - x), 0, 255).astype(np.uint8))
 
     def f(frame, t):
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -206,6 +208,77 @@ def touchup_filter(strength):
     return f
 
 
+# ---------- rebuild the shot in the new set ----------
+def _face_height(frames):
+    ff = FaceFinder()
+    hs = []
+    for f in frames:
+        fs = ff.find(f)
+        if fs:
+            hs.append((fs[0][3] / f.shape[0], (fs[0][0] + fs[0][2] / 2) / f.shape[1], (fs[0][1] + fs[0][3] / 2) / f.shape[0]))
+    if not hs:
+        return None, None, None
+    return tuple(float(np.median([h[i] for h in hs])) for i in range(3))
+
+
+def composite_into_set(src, ref, out, look=None, size=(1920, 1080)):
+    """Cut the person out of the old video and place them in the new video's set at the new video's scale."""
+    from vibekit.segment import person_mask, MaskSmoother
+    W, H = size
+    plate = cv2.resize(clean_plate(ref), (W, H), interpolation=cv2.INTER_CUBIC)
+    old_fh, old_cx, old_cy = _face_height(_frames(src, 12))
+    ref_fh, ref_cx, ref_cy = _face_height(_frames(ref, 12))
+    info = probe(src)
+    sw, sh = info["width"], info["height"]
+    scale = (ref_fh * H) / (old_fh * sh) if old_fh and ref_fh else H / sh
+    scale = float(np.clip(scale, 0.4, 3.0))
+    nw, nh = int(sw * scale), int(sh * scale)
+    # put the face exactly where the new video's speaker's face sits
+    x0 = int((ref_cx or 0.5) * W - (old_cx or 0.5) * nw)
+    y0 = int((ref_cy or 0.4) * H - (old_cy or 0.45) * nh)
+    y0 = min(y0, H - nh) if y0 + nh < H * 0.75 else y0
+    # webcam footage ends at the chest: fade the bottom of the person into a dark studio gradient
+    ramp = np.ones(nh, np.float32)
+    fl = int(nh * 0.22)
+    ramp[-fl:] = np.linspace(1, 0, fl) ** 1.5
+    plate = plate.astype(np.float32)
+    shade = np.clip((np.arange(H) - (y0 + nh * 0.55)) / (H * 0.25), 0, 1)[:, None, None]
+    plate = (plate * (1 - 0.93 * shade)).astype(np.uint8)
+    smooth = MaskSmoother(0.6)
+    cap = cv2.VideoCapture(str(src))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    tmp = str(out) + ".v.mp4"
+    proc = subprocess.Popen([FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}",
+                             "-r", f"{fps:.5f}", "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+                             "-pix_fmt", "yuv420p", tmp], stdin=subprocess.PIPE)
+    i = 0
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        if look:
+            f = look(f, i / fps)
+        m = smooth(person_mask(f))
+        big = cv2.resize(f, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+        bm = (cv2.GaussianBlur(cv2.resize(m, (nw, nh)), (0, 0), 1.5) * ramp[:, None])[..., None]
+        canvas = plate.copy()
+        # paste the scaled person into the canvas (clip to bounds)
+        cx0, cy0 = max(0, x0), max(0, y0)
+        cx1, cy1 = min(W, x0 + nw), min(H, y0 + nh)
+        sx0, sy0 = cx0 - x0, cy0 - y0
+        reg = canvas[cy0:cy1, cx0:cx1].astype(np.float32)
+        pp = big[sy0:sy0 + (cy1 - cy0), sx0:sx0 + (cx1 - cx0)].astype(np.float32)
+        mm = bm[sy0:sy0 + (cy1 - cy0), sx0:sx0 + (cx1 - cx0)]
+        canvas[cy0:cy1, cx0:cx1] = (pp * mm + reg * (1 - mm)).astype(np.uint8)
+        proc.stdin.write(canvas.tobytes())
+        i += 1
+    cap.release(); proc.stdin.close(); proc.wait()
+    subprocess.run([FFMPEG, "-v", "error", "-y", "-i", tmp, "-i", str(src), "-map", "0:v", "-map", "1:a?", "-c:v", "copy",
+                    "-c:a", "pcm_s16le", "-shortest", str(out)], check=True)
+    Path(tmp).unlink(missing_ok=True)
+    return out, scale
+
+
 # ---------- apply ----------
 def tighten_segments(video, min_pause, keep=0.12):
     dur = probe(video)["duration"]
@@ -254,10 +327,20 @@ def apply(a):
         fmt = "horizontal" if info["width"] >= info["height"] else "vertical"
     W, H = SIZES[fmt]
     filters = []
-    if a.color > 0:
-        filters.append(color_filter(_frames(src), _frames(ref), a.color))
     notes = []
-    if a.bg != "keep":
+    look = color_filter(_frames(src), _frames(ref), a.color) if a.color > 0 else None
+    rebuilt = False
+    if a.bg == "ref" and a.match_scale:
+        crowd = [len(FaceFinder().find(f)) for f in _frames(src, 12)]
+        if np.median(crowd) > 1 and not a.force_bg:
+            notes.append("Set rebuild skipped: more than one person in most shots.")
+        else:
+            src, sc = composite_into_set(src, ref, work / "in_new_set.mp4", look=look)
+            notes.append(f"Rebuilt the shot in the new set (person scaled x{sc:.2f} to match the new framing).")
+            rebuilt = True
+    if look and not rebuilt:
+        filters.append(look)
+    if a.bg != "keep" and not rebuilt:
         crowd = [len(FaceFinder().find(f)) for f in _frames(src, 12)]
         if np.median(crowd) > 1 and not a.force_bg:
             notes.append("Background swap skipped: more than one person in most shots (works best on a single talking head). "
@@ -287,8 +370,10 @@ def apply(a):
                         str(Path(__file__).resolve().parent / "music_gen.py"), "--prompt", a.music_prompt,
                         "--seconds", str(round(probe(src)["duration"] + 2)), "--out", music], check=True)
     render(src, out, fmt=fmt, words=words, caption_style=a.captions if a.captions != "none" else "bold",
+           caption_y=0.74 if rebuilt else None,
            headline=a.headline, follow_face=a.format != "keep", filters=filters, music=music,
-           punch=a.format != "keep", sfx=True, pre_filters=pre)
+           punch=a.format != "keep", sfx=True, pre_filters=pre,
+           upscale=(a.upscale == "on") or (a.upscale == "auto" and probe(src)["height"] < 720 and not rebuilt))
     rep = qa.report(out)
     if notes:
         rep["notes"] = notes
@@ -306,6 +391,10 @@ def main():
     p.add_argument("--headline"); p.add_argument("--touchup", type=float, default=0.0)
     p.add_argument("--force-bg", action="store_true")
     p.add_argument("--music-prompt", help="add an original music bed, e.g. 'warm lofi, mellow piano, 85 bpm, instrumental'")
+    p.add_argument("--match-scale", action=argparse.BooleanOptionalAction, default=True,
+                   help="with --bg ref: rebuild the shot (old person, new set, new framing size)")
+    p.add_argument("--upscale", choices=["auto", "on", "off"], default="auto",
+                   help="AI upscaling (Real-ESRGAN) for low-res footage; auto = on below 720p")
     p.add_argument("--face-edit", choices=["beard", "stubble", "shave", "custom"],
                    help="EXPERIMENTAL generative face edit (own face / with consent only)")
     p.add_argument("--face-prompt", help="description for --face-edit custom")

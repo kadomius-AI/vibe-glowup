@@ -29,6 +29,12 @@ and explain in plain words. Never change or delete the original file.
    - `--captions bold|clean|punch|none` and `--headline "Line 1|Line 2"` (a NEW hook for today's audience)
    - `--bg ref|blur|color:#hex|image:file.jpg` put the person in the new set/background (single talking head only;
      it skips crowds automatically — `--force-bg` to try anyway)
+   - `--bg ref` on a single talking head now **rebuilds the shot**: the person from the old video is cut out, resized to the
+     new video's framing and seated in the new set (face where the new speaker's face sits), with a soft studio fade
+     below the chest for webcam-style footage. `--no-match-scale` for a plain background swap instead.
+   - `--upscale auto|on|off` AI upscaling (Real-ESRGAN) for old low-res footage (auto below 720p). It sharpens edges but
+     can't invent detail that was never recorded; very compressed webcam footage stays soft.
+   - Color matching copies the new brightness/contrast fully and shifts color only gently, so skin stays natural.
    - `--touchup 0.3` EXPERIMENTAL light skin smoothing
    - `--face-edit beard|stubble|shave|custom` EXPERIMENTAL generative face edit: one frame is edited with SDXL
      Inpainting, then carried across the clip along 478 face landmarks; the real mouth is kept so speech stays natural.
