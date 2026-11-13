@@ -295,89 +295,132 @@ def tighten_segments(video, min_pause, keep=0.12):
 
 
 def apply(a):
+    """Glow up OLD to match REF. Writes the video, an edit plan (<out>.plan.json) and a QA report (<out>.qa.json)."""
+    from vibekit import style, grade, checks, plan as vplan
+    from vibekit.log import get as getlog, ffmpeg as ff
+    log = getlog("glowup")
     old, ref, out = Path(a.old), Path(a.ref), Path(a.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     work = out.parent / f"{out.stem}_work"
     work.mkdir(parents=True, exist_ok=True)
+    plan = vplan.new("glowup", {"source": old, "reference": ref})
+    plan["decisions"]["args"] = {k: v for k, v in vars(a).items() if k not in ("cmd",)}
+    notes = []
+
+    # 0) measure both videos (deterministic numbers, recorded in the plan)
+    log.info("measuring the reference style…")
+    ref_prof = style.profile(ref)
+    src_prof = style.profile(old)
+    plan["decisions"]["reference_style"] = ref_prof
+    plan["decisions"]["source_style"] = src_prof
     src = old
-    # 1) tighten pauses
-    if a.tighten and a.tighten > 0 and probe(old)["has_audio"]:
-        segs = tighten_segments(old, a.tighten)
+
+    # 1) pacing: tighten pauses, harder when the reference has almost no dead air
+    tighten = a.tighten
+    if tighten and ref_prof["pacing"]["pause_share"] < 0.03 and src_prof["pacing"]["pause_share"] > 0.06:
+        tighten = min(tighten, 0.28)
+    if tighten and tighten > 0 and probe(old)["has_audio"]:
+        segs = tighten_segments(old, tighten)
+        plan["decisions"]["tighten"] = {"min_pause": tighten, "segments": segs}
         if len(segs) > 1:
             media.cut(old, segs, work / "tight.mp4")
             src = work / "tight.mp4"
-    # 2) audio cleanup: isolate the voice (removes old music, crowd and noise), then polish it
+    # 2) audio: isolate the voice, then polish it
     if a.audio and probe(src)["has_audio"]:
         from vibekit import sound
         voice = sound.isolate_voice(src)
         vw = work / "voice.wav"
         sound.save_wav(vw, voice)
         dst = work / "audio_clean.mp4"
-        subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(src), "-i", str(vw), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-                        "-af", "highpass=f=70,afftdn=nf=-30,acompressor=threshold=-20dB:ratio=2.5:attack=8:release=120",
-                        "-c:a", "pcm_s16le", "-shortest", str(dst)], check=True)
+        ff(["-y", "-i", str(src), "-i", str(vw), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+            "-af", "highpass=f=70,afftdn=nf=-30,acompressor=threshold=-20dB:ratio=2.5:attack=8:release=120",
+            "-c:a", "pcm_s16le", "-shortest", str(dst)], what="voice polish")
         src = dst
+        plan["decisions"]["audio"] = "demucs htdemucs voice isolation + highpass/denoise/compressor + -14 LUFS"
     # 3) transcript for captions
     words = None
     if a.captions != "none":
         words = media.transcribe(src, work / "transcript.json")["words"]
-    # 4) look filters, applied on the final frame size
+    # 4) format
     fmt = a.format
+    info = probe(src)
     if fmt == "keep":
-        info = probe(src)
         fmt = "horizontal" if info["width"] >= info["height"] else "vertical"
     W, H = SIZES[fmt]
-    filters = []
-    notes = []
-    look = color_filter(_frames(src), _frames(ref), a.color) if a.color > 0 else None
+    filters, pre = [], []
+    # 5) color: bounded auto-grade toward the reference (exposure from the face, skin protected)
+    src_frames = _frames(src, 16)
+    ffd = FaceFinder()
+    src_boxes = [(lambda r: r[0][:4] if r else None)(ffd.find(f)) for f in src_frames]
+    g = None
+    if a.color > 0:
+        g = grade.Grade(grade.measure(src_frames, src_boxes), ref_prof["color"], strength=min(1.0, a.color + 0.2))
+        plan["decisions"]["grade"] = g.params()
     rebuilt = False
     if a.bg == "ref" and a.match_scale:
-        crowd = [len(FaceFinder().find(f)) for f in _frames(src, 12)]
+        crowd = [len(ffd.find(f)) for f in _frames(src, 12)]
         if np.median(crowd) > 1 and not a.force_bg:
             notes.append("Set rebuild skipped: more than one person in most shots.")
         else:
-            src, sc = composite_into_set(src, ref, work / "in_new_set.mp4", look=look)
-            notes.append(f"Rebuilt the shot in the new set (person scaled x{sc:.2f} to match the new framing).")
+            src, sc = composite_into_set(src, ref, work / "in_new_set.mp4", look=g)
+            notes.append(f"Rebuilt the shot in the new set (person scaled x{sc:.2f}).")
             rebuilt = True
-    if look and not rebuilt:
-        filters.append(look)
+    if g is not None and not rebuilt:
+        filters.append(g)
     if a.bg != "keep" and not rebuilt:
-        crowd = [len(FaceFinder().find(f)) for f in _frames(src, 12)]
+        crowd = [len(ffd.find(f)) for f in _frames(src, 12)]
         if np.median(crowd) > 1 and not a.force_bg:
-            notes.append("Background swap skipped: more than one person in most shots (works best on a single talking head). "
-                         "Use --force-bg to try anyway.")
+            notes.append("Background swap skipped: more than one person in most shots. Use --force-bg to try anyway.")
         else:
             filters.append(bg_filter(a.bg, ref, W, H))
     if a.touchup > 0:
         filters.append(touchup_filter(min(1.0, a.touchup)))
-    pre = []
     if a.face_edit:
-        # EXPERIMENTAL generative face edit: edit one clear frame, carry it across the clip along the face landmarks.
-        # Only for the user's own face or with the person's consent; never to impersonate anyone.
         from vibekit.faceedit import VideoFaceEditor, landmarks
-        key = None
-        for f in _frames(src, 16):
-            if landmarks(f) is not None:
-                key = f
-                break
+        key = next((f for f in _frames(src, 16) if landmarks(f) is not None), None)
         if key is None:
             notes.append("Face edit skipped: no clear face found.")
         else:
             pre.append(VideoFaceEditor(key, a.face_edit, a.face_prompt))
+    # 6) detail restoration for low-res sources
+    low_res = probe(src)["height"] < 720
+    upscale = (a.upscale == "on") or (a.upscale == "auto" and low_res and not rebuilt)
+    restore = a.restore_faces if a.restore_faces is not None else (0.65 if low_res and not rebuilt else 0.0)
+    plan["decisions"]["restore"] = {"upscale": bool(upscale), "face_restore_strength": restore,
+                                    "models": ["Real-ESRGAN general x4 v3", "GFPGAN v1.4"]}
     music = None
     if a.music_prompt:
         music = str(work / "music.wav")
         subprocess.run([str(Path.home() / ".local/share/vibekit/acestep-venv/bin/python"),
                         str(Path(__file__).resolve().parent / "music_gen.py"), "--prompt", a.music_prompt,
                         "--seconds", str(round(probe(src)["duration"] + 2)), "--out", music], check=True)
+        plan["decisions"]["music"] = {"generator": "ACE-Step", "prompt": a.music_prompt}
+    plan["decisions"].update({"format": fmt, "layout_requested": a.layout, "captions": a.captions, "headline": a.headline})
     render(src, out, fmt=fmt, words=words, caption_style=a.captions if a.captions != "none" else "bold",
-           caption_y=0.74 if rebuilt else None,
-           headline=a.headline, follow_face=a.format != "keep", filters=filters, music=music,
-           punch=a.format != "keep", sfx=True, pre_filters=pre,
-           upscale=(a.upscale == "on") or (a.upscale == "auto" and probe(src)["height"] < 720 and not rebuilt))
-    rep = qa.report(out)
-    if notes:
-        rep["notes"] = notes
+           caption_y=0.74 if rebuilt else None, headline=a.headline, follow_face=a.format != "keep",
+           filters=filters, music=music, punch=a.format != "keep", sfx=True, pre_filters=pre,
+           upscale=upscale, restore_faces=restore, layout="crop" if rebuilt else a.layout)
+    man = json.loads(Path(str(out) + ".render.json").read_text())
+    plan["decisions"]["layout"] = man["layout"]
+    rep = checks.run(out, fmt=fmt, manifest=man)
+    plan["outputs"] = {"video": str(out), "qa": str(out) + ".qa.json", "notes": notes}
+    checks.save(rep, str(out) + ".qa.json")
+    vplan.save(plan, str(out) + ".plan.json")
+    log.info(checks.summary(rep))
+    rep["notes"] = notes
+    rep["plan"] = str(out) + ".plan.json"
+    rep["contact_sheet"] = qa.contact_sheet(out, Path(out).with_name(Path(out).stem + "_sheet.png"))
     return rep
+
+
+def render_plan(plan_path, out=None):
+    """Re-run a saved plan exactly (inputs are verified by fingerprint)."""
+    from vibekit import plan as vplan
+    pl = vplan.load(plan_path)
+    args = argparse.Namespace(**pl["decisions"]["args"])
+    if out:
+        args.out = out
+    return apply(args)
 
 
 def main():
@@ -391,18 +434,27 @@ def main():
     p.add_argument("--headline"); p.add_argument("--touchup", type=float, default=0.0)
     p.add_argument("--force-bg", action="store_true")
     p.add_argument("--music-prompt", help="add an original music bed, e.g. 'warm lofi, mellow piano, 85 bpm, instrumental'")
-    p.add_argument("--match-scale", action=argparse.BooleanOptionalAction, default=True,
-                   help="with --bg ref: rebuild the shot (old person, new set, new framing size)")
+    p.add_argument("--match-scale", action=argparse.BooleanOptionalAction, default=False,
+                   help="with --bg ref: rebuild the shot in the new set (experimental, opt-in)")
     p.add_argument("--upscale", choices=["auto", "on", "off"], default="auto",
                    help="AI upscaling (Real-ESRGAN) for low-res footage; auto = on below 720p")
+    p.add_argument("--restore-faces", type=float, default=None,
+                   help="GFPGAN face restoration strength 0..1 (auto: 0.65 below 720p)")
+    p.add_argument("--layout", choices=["auto", "crop", "fill"], default="auto",
+                   help="crop = face-tracked crop; fill = whole frame over a blurred backdrop; auto picks by face size")
     p.add_argument("--face-edit", choices=["beard", "stubble", "shave", "custom"],
                    help="EXPERIMENTAL generative face edit (own face / with consent only)")
     p.add_argument("--face-prompt", help="description for --face-edit custom")
+    p.add_argument("--allow-qa-fail", action="store_true", help="exit 0 even when automated QA fails")
+    r = sub.add_parser("render-plan"); r.add_argument("plan"); r.add_argument("--out")
     a = ap.parse_args()
     if a.cmd == "analyze":
         print(json.dumps(analyze(a.old, a.ref, a.out), indent=1))
-    else:
-        print(json.dumps(apply(a), indent=1))
+        return
+    rep = apply(a) if a.cmd == "apply" else render_plan(a.plan, a.out)
+    print(json.dumps(rep, indent=1))
+    if not rep.get("passed", True) and not getattr(a, "allow_qa_fail", False):
+        sys.exit(2)
 
 
 if __name__ == "__main__":

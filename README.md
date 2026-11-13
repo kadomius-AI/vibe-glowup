@@ -40,3 +40,9 @@ Experimental: light skin touch-up. Real face/beard changes need a generative AI 
 No API keys, no accounts, no payments. First use downloads about 10–15 GB of models once.
 
 Fonts: Montserrat, Anton, Playfair Display, Inter — SIL Open Font License 1.1.
+
+## Tests
+```
+~/.local/share/vibekit/venv/bin/python -m pytest plugins/vibe-glowup/tests -q
+```
+Every render also writes a `.plan.json` (decisions) and a `.qa.json` (automated checks).
