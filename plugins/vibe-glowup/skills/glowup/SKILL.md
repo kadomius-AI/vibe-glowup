@@ -22,7 +22,9 @@ and explain in plain words. Never change or delete the original file.
 4. **Apply:** `run.sh glowup.py apply OLD.mp4 --ref NEW.mp4 --out "<folder>/<name>_glowup.mp4" [options]`
    - `--color 0.8` match the new look (0.4 subtle, 1.0 full)
    - `--tighten 0.3` remove pauses longer than 0.3 s (modern pacing)
-   - `--audio` clean hiss/hum + even out volume (always with old phone/webinar audio)
+   - `--audio` **isolate the voice** with Demucs AI (removes old music, crowd, room noise), then polish and level it
+   - `--music-prompt "warm lofi, mellow keys, 85 bpm, instrumental"` add an ORIGINAL royalty-free music bed, ducked under the voice
+   - vertical output also gets **punch-in zooms** and subtle sound effects automatically
    - `--format vertical` face-tracked 9:16 for Reels/Shorts (or `keep`, `square`, `portrait`)
    - `--captions bold|clean|punch|none` and `--headline "Line 1|Line 2"` (a NEW hook for today's audience)
    - `--bg ref|blur|color:#hex|image:file.jpg` put the person in the new set/background (single talking head only;

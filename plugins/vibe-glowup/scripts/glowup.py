@@ -9,11 +9,12 @@
   glowup.py apply OLD.mp4 --ref NEW.mp4 --out OUT.mp4
                    [--color 0.8]            match the reference's color/brightness (0 = off, 1 = full)
                    [--tighten 0.35]         remove pauses longer than this many seconds (0 = off)
-                   [--audio]                clean the audio (hum/hiss reduction, gentle compression)
+                   [--audio]                isolate the voice (removes old music, crowd, noise) + polish
                    [--bg keep|blur|ref|color:#hex|image:path.jpg]   replace the background behind the person
                    [--format keep|vertical|square|portrait]          vertical = face-tracked 9:16
                    [--captions none|bold|clean|punch] [--headline "Line 1|Line 2"]
                    [--touchup 0.0-1.0]      EXPERIMENTAL light skin smoothing on faces
+                   [--music-prompt "..."]  add an original, royalty-free music bed (ducked under the voice)
       Steps run in that order; the original file is never changed.
 """
 import argparse, json, subprocess, sys
@@ -229,12 +230,16 @@ def apply(a):
         if len(segs) > 1:
             media.cut(old, segs, work / "tight.mp4")
             src = work / "tight.mp4"
-    # 2) audio cleanup (video stream copied)
+    # 2) audio cleanup: isolate the voice (removes old music, crowd and noise), then polish it
     if a.audio and probe(src)["has_audio"]:
+        from vibekit import sound
+        voice = sound.isolate_voice(src)
+        vw = work / "voice.wav"
+        sound.save_wav(vw, voice)
         dst = work / "audio_clean.mp4"
-        subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(src), "-c:v", "copy",
-                        "-af", "highpass=f=80,lowpass=f=14000,afftdn=nf=-28,acompressor=threshold=-20dB:ratio=2.5:attack=8:release=120",
-                        "-c:a", "pcm_s16le", str(dst)], check=True)
+        subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(src), "-i", str(vw), "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+                        "-af", "highpass=f=70,afftdn=nf=-30,acompressor=threshold=-20dB:ratio=2.5:attack=8:release=120",
+                        "-c:a", "pcm_s16le", "-shortest", str(dst)], check=True)
         src = dst
     # 3) transcript for captions
     words = None
@@ -259,8 +264,15 @@ def apply(a):
             filters.append(bg_filter(a.bg, ref, W, H))
     if a.touchup > 0:
         filters.append(touchup_filter(min(1.0, a.touchup)))
+    music = None
+    if a.music_prompt:
+        music = str(work / "music.wav")
+        subprocess.run([str(Path.home() / ".local/share/vibekit/acestep-venv/bin/python"),
+                        str(Path(__file__).resolve().parent / "music_gen.py"), "--prompt", a.music_prompt,
+                        "--seconds", str(round(probe(src)["duration"] + 2)), "--out", music], check=True)
     render(src, out, fmt=fmt, words=words, caption_style=a.captions if a.captions != "none" else "bold",
-           headline=a.headline, follow_face=a.format != "keep", filters=filters)
+           headline=a.headline, follow_face=a.format != "keep", filters=filters, music=music,
+           punch=a.format != "keep", sfx=True)
     rep = qa.report(out)
     if notes:
         rep["notes"] = notes
@@ -277,6 +289,7 @@ def main():
     p.add_argument("--format", default="keep"); p.add_argument("--captions", default="bold")
     p.add_argument("--headline"); p.add_argument("--touchup", type=float, default=0.0)
     p.add_argument("--force-bg", action="store_true")
+    p.add_argument("--music-prompt", help="add an original music bed, e.g. 'warm lofi, mellow piano, 85 bpm, instrumental'")
     a = ap.parse_args()
     if a.cmd == "analyze":
         print(json.dumps(analyze(a.old, a.ref, a.out), indent=1))
