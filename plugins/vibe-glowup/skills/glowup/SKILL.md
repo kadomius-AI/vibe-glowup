@@ -19,8 +19,11 @@ and explain in plain words. Never change or delete the original file.
 3. **Pick the best part first.** Old long videos rarely work whole. Skim the transcript and keep the most valuable,
    still-true moment (use `/clips` rules: open on the hook, one idea, a payoff). Cut it with `clips.py render … --no-captions --format horizontal`
    or pass the full file if it's already short.
-4. **Apply:** `run.sh glowup.py apply OLD.mp4 --ref NEW.mp4 --out "<folder>/<name>_glowup.mp4" [options]`
-   - `--color 0.8` match the new look (0.4 subtle, 1.0 full)
+4. **Apply** (it measures both videos first: pacing, face exposure, color, framing; the reference sets bounded
+   targets, it is not copied): `run.sh glowup.py apply OLD.mp4 --ref NEW.mp4 --out "<folder>/<name>_glowup.mp4" [options]`
+   - `--color 0.8` bounded auto-grade toward the reference: exposure set from the FACE, white balance on neutral areas,
+     skin tones protected, shadows never crushed, light sharpening (0.4 subtle, 1.0 full)
+   - `--layout auto|crop|fill` (see /clips), `--upscale auto|on|off`, `--restore-faces 0..1` (auto under 720p)
    - `--tighten 0.3` remove pauses longer than 0.3 s (modern pacing)
    - `--audio` **isolate the voice** with Demucs AI (removes old music, crowd, room noise), then polish and level it
    - `--music-prompt "warm lofi, mellow keys, 85 bpm, instrumental"` add an ORIGINAL royalty-free music bed, ducked under the voice
@@ -29,7 +32,7 @@ and explain in plain words. Never change or delete the original file.
    - `--captions bold|clean|punch|none` and `--headline "Line 1|Line 2"` (a NEW hook for today's audience)
    - `--bg ref|blur|color:#hex|image:file.jpg` put the person in the new set/background (single talking head only;
      it skips crowds automatically — `--force-bg` to try anyway)
-   - `--bg ref` on a single talking head now **rebuilds the shot**: the person from the old video is cut out, resized to the
+   - `--bg ref --match-scale` (opt-in, experimental) **rebuilds the shot**: the person from the old video is cut out, resized to the
      new video's framing and seated in the new set (face where the new speaker's face sits), with a soft studio fade
      below the chest for webcam-style footage. `--no-match-scale` for a plain background swap instead.
    - `--upscale auto|on|off` AI upscaling (Real-ESRGAN) for old low-res footage (auto below 720p). It sharpens edges but
@@ -56,3 +59,7 @@ and explain in plain words. Never change or delete the original file.
 - **Relevance over age:** evergreen lessons, stories and frameworks are the best candidates.
 - **Honesty and consent:** only restyle content the user owns or has rights to. Face/appearance changes are an
   experiment, never used to mislead about who someone is. Generative face edits (`--face-edit`) are experimental and consent-only.
+
+## Outputs
+`<out>.mp4`, `<out>.mp4.plan.json` (re-render with `glowup.py render-plan`), `<out>.mp4.qa.json` (exit code 2 on QA failure),
+`<out>_sheet.png` (contact sheet: always LOOK at it before delivering).

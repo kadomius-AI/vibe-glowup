@@ -1,7 +1,7 @@
 {
   "name": "vibe-glowup",
   "displayName": "Vibe Glow Up",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "/glowup: old videos in, glowed-up videos out \u2014 matched to your current look, pacing, audio, captions and vertical framing, ready to post again. Also includes /clips: long video in, captioned vertical clips out. Free voiceovers, original music, 3D motion and sound design, all local; no API keys, no payments.",
   "author": {
     "name": "kadomius-AI"
