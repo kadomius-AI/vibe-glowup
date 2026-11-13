@@ -1,0 +1,6 @@
+{
+  "name": "vibe-glowup",
+  "owner": { "name": "kadomius-AI" },
+  "metadata": { "description": "/glowup: old videos in, glowed-up videos out — matched to your current look, pacing, audio, captions and vertical framing, ready to post again." },
+  "plugins": [ { "name": "vibe-glowup", "source": "./plugins/vibe-glowup", "description": "/glowup: old videos in, glowed-up videos out — matched to your current look, pacing, audio, captions and vertical framing, ready to post again." } ]
+}
