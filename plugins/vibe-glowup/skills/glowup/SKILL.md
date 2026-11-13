@@ -30,6 +30,9 @@ and explain in plain words. Never change or delete the original file.
    - `--bg ref|blur|color:#hex|image:file.jpg` put the person in the new set/background (single talking head only;
      it skips crowds automatically — `--force-bg` to try anyway)
    - `--touchup 0.3` EXPERIMENTAL light skin smoothing
+   - `--face-edit beard|stubble|shave|custom` EXPERIMENTAL generative face edit: one frame is edited with SDXL
+     Inpainting, then carried across the clip along 478 face landmarks; the real mouth is kept so speech stays natural.
+     Own face or clear consent only; never to impersonate anyone. Best on steady talking heads; check every second of the result.
 5. **Check:** LOOK at the `contact_sheet`. Fix and redo if the face is cut off, the wrong person is followed
    (re-cut tighter, or use `clips.py render --prefer-x 0.3` on the refreshed file), captions clash with burned-in text
    (`--captions none` or move them with `clips.py render --caption-y 0.55`), or the background swap shows halos.
@@ -46,5 +49,4 @@ and explain in plain words. Never change or delete the original file.
 - **Add a current point of view:** a new on-screen line or caption framing why it matters now.
 - **Relevance over age:** evergreen lessons, stories and frameworks are the best candidates.
 - **Honesty and consent:** only restyle content the user owns or has rights to. Face/appearance changes are an
-  experiment, never used to mislead about who someone is. Real beard/face changes need a generative AI model and
-  are not part of this tool.
+  experiment, never used to mislead about who someone is. Generative face edits (`--face-edit`) are experimental and consent-only.

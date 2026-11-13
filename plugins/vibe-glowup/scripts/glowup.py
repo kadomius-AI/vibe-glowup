@@ -14,6 +14,8 @@
                    [--format keep|vertical|square|portrait]          vertical = face-tracked 9:16
                    [--captions none|bold|clean|punch] [--headline "Line 1|Line 2"]
                    [--touchup 0.0-1.0]      EXPERIMENTAL light skin smoothing on faces
+                   [--face-edit beard|stubble|shave|custom] [--face-prompt "..."]
+                                            EXPERIMENTAL generative face edit carried across the video (consent only)
                    [--music-prompt "..."]  add an original, royalty-free music bed (ducked under the voice)
       Steps run in that order; the original file is never changed.
 """
@@ -264,6 +266,20 @@ def apply(a):
             filters.append(bg_filter(a.bg, ref, W, H))
     if a.touchup > 0:
         filters.append(touchup_filter(min(1.0, a.touchup)))
+    pre = []
+    if a.face_edit:
+        # EXPERIMENTAL generative face edit: edit one clear frame, carry it across the clip along the face landmarks.
+        # Only for the user's own face or with the person's consent; never to impersonate anyone.
+        from vibekit.faceedit import VideoFaceEditor, landmarks
+        key = None
+        for f in _frames(src, 16):
+            if landmarks(f) is not None:
+                key = f
+                break
+        if key is None:
+            notes.append("Face edit skipped: no clear face found.")
+        else:
+            pre.append(VideoFaceEditor(key, a.face_edit, a.face_prompt))
     music = None
     if a.music_prompt:
         music = str(work / "music.wav")
@@ -272,7 +288,7 @@ def apply(a):
                         "--seconds", str(round(probe(src)["duration"] + 2)), "--out", music], check=True)
     render(src, out, fmt=fmt, words=words, caption_style=a.captions if a.captions != "none" else "bold",
            headline=a.headline, follow_face=a.format != "keep", filters=filters, music=music,
-           punch=a.format != "keep", sfx=True)
+           punch=a.format != "keep", sfx=True, pre_filters=pre)
     rep = qa.report(out)
     if notes:
         rep["notes"] = notes
@@ -290,6 +306,9 @@ def main():
     p.add_argument("--headline"); p.add_argument("--touchup", type=float, default=0.0)
     p.add_argument("--force-bg", action="store_true")
     p.add_argument("--music-prompt", help="add an original music bed, e.g. 'warm lofi, mellow piano, 85 bpm, instrumental'")
+    p.add_argument("--face-edit", choices=["beard", "stubble", "shave", "custom"],
+                   help="EXPERIMENTAL generative face edit (own face / with consent only)")
+    p.add_argument("--face-prompt", help="description for --face-edit custom")
     a = ap.parse_args()
     if a.cmd == "analyze":
         print(json.dumps(analyze(a.old, a.ref, a.out), indent=1))
